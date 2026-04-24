@@ -300,11 +300,12 @@
       <button id="connect-btn">CONNECT</button>
     </div>
     <div id="keywords-row">
-      <span class="kw-chip">alarm</span>
-      <span class="kw-chip">buzzer</span>
-      <span class="kw-chip">alert</span>
-      <span class="kw-chip">ring</span>
-      <span class="kw-chip">find</span>
+      <span class="kw-chip">wallet</span>
+      <span class="kw-chip">keys</span>
+      <span class="kw-chip">medicine</span>
+      <span class="kw-chip">spectacles</span>
+      <span class="kw-chip">stick</span>
+      <span class="kw-chip">watch</span>
       <span class="kw-chip stop">stop · silence · off</span>
     </div>
   </div>
@@ -505,9 +506,26 @@ window.addEventListener('resize', () => {
 
 
 // ════════════════════════════════════════════════════════════
-//  WEBSOCKET + SPEECH
+//  BUZZER CONFIG + SPEECH (HTTP-based, continuous listening)
 // ════════════════════════════════════════════════════════════
-let ws = null;
+
+const BUZZERS = [
+  { endpoint: '/buzz/0', keyword: 'wallet',
+    aliases: ['wallet', 'wallets', 'walled', 'ballet', 'valet'] },
+  { endpoint: '/buzz/1', keyword: 'keys',
+    aliases: ['keys', 'key', 'cheese', 'please keys'] },
+  { endpoint: '/buzz/2', keyword: 'medicine',
+    aliases: ['medicine', 'medicines', 'medical', 'medic'] },
+  { endpoint: '/buzz/3', keyword: 'spectacles',
+    aliases: ['spectacles', 'spectacle', 'spect', 'specs', 'glasses'] },
+  { endpoint: '/buzz/4', keyword: 'stick',
+    aliases: ['stick', 'sticks', 'stick'] },
+  { endpoint: '/buzz/5', keyword: 'watch',
+    aliases: ['watch', 'watches', 'watched'] },
+];
+
+// Stop words — any of these kills the buzzer
+const STOP_WORDS = ['stop', 'silence', 'off', 'quiet', 'enough', 'shut'];
 
 const ipInput      = document.getElementById('ip-input');
 const connectBtn   = document.getElementById('connect-btn');
@@ -516,83 +534,171 @@ const statusText   = document.getElementById('status-text');
 const transcriptEl = document.getElementById('transcript-text');
 const micBtn       = document.getElementById('mic-btn');
 
+// Load saved IP
+const savedIP = localStorage.getItem('espIP');
+if (savedIP) ipInput.value = savedIP;
+
+const ESP_PORT = 81;  // must match the port in esp32_buzzer.ino
+function getESPIP() { return ipInput.value.trim() || '192.168.1.100'; }
+function espURL(path) { return `http://${getESPIP()}:${ESP_PORT}${path}`; }
+
 function setStatus(cls, text) {
   statusPill.className = cls;
   statusText.textContent = text;
 }
 
+// CONNECT button just saves the IP and marks as ready
 connectBtn.addEventListener('click', () => {
-  const ip = ipInput.value.trim();
+  const ip = getESPIP();
   if (!ip) return;
-  if (ws) ws.close();
-  ws = new WebSocket(`ws://${ip}:81`);
-
-  ws.onopen  = () => setStatus('connected', `Connected · ${ip}`);
-  ws.onclose = () => setStatus('', 'Disconnected');
-  ws.onerror = () => setStatus('', 'Connection failed');
-  ws.onmessage = (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      if (d.status === 'triggered') setStatus('triggered', 'Buzzer Active');
-      if (d.status === 'stopped')   setStatus('connected',  'Buzzer Stopped');
-      if (d.status === 'no_match')  setStatus('connected',  'No Match');
-    } catch {}
-  };
+  localStorage.setItem('espIP', ip);
+  setStatus('connected', `Ready · ${ip}`);
 });
 
-// ── Speech Recognition ────────────────────────────────────
+// ── Trigger a buzzer via HTTP GET (fire-and-forget) ───────
+function triggerBuzzer(index) {
+  const b   = BUZZERS[index];
+  const url = espURL(b.endpoint);
+  setStatus('triggered', `Buzzing · ${b.keyword}`);
+  fetch(url, { mode: 'no-cors' })
+    .then(() => console.log(`✔ Triggered ${b.keyword}`))
+    .catch(err => {
+      console.warn(`✘ ${b.keyword} failed:`, err);
+      setStatus('', `Error: ${err.message}`);
+    });
+}
+
+// ── Send stop command (fire-and-forget) ───────────────────
+function stopBuzzers() {
+  const url = espURL('/stop');
+  setStatus('stopped', 'Buzzer Stopped');
+  fetch(url, { mode: 'no-cors' })
+    .then(() => console.log('✔ Stop sent'))
+    .catch(err => console.warn('✘ Stop failed:', err));
+  setTimeout(() => setStatus('connected', `Ready · ${getESPIP()}`), 1500);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SPEECH ENGINE  —  zero-delay, pre-indexed keyword matching
+// ══════════════════════════════════════════════════════════════
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 let isListening = false;
 
-if (SpeechRecognition) {
-  recognition = new SpeechRecognition();
-  recognition.continuous       = false;
-  recognition.interimResults   = true;
-  recognition.lang             = 'en-US';
+// ── Build a lookup map:  heard-word → { type, index } ────────
+// Every alias maps to { type:'buzz', index } or { type:'stop' }
+// so matching is a single Map.get() — O(1), no loops.
+const WORD_MAP = new Map();
 
-  recognition.onresult = (e) => {
-    let final = '', interim = '';
+// Stop words
+['stop', 'silence', 'off', 'quiet', 'enough', 'shut'].forEach(w =>
+  WORD_MAP.set(w, { type: 'stop' })
+);
+
+// Buzzer aliases  (index matches BUZZERS array)
+const ALIAS_TABLE = [
+  /* 0 wallet     */ ['wallet', 'wallets', 'walled', 'ballet', 'valet'],
+  /* 1 keys       */ ['keys', 'key', 'cheese'],
+  /* 2 medicine   */ ['medicine', 'medicines', 'medical', 'medic'],
+  /* 3 spectacles */ ['spectacles', 'spectacle', 'spect', 'specs', 'glasses'],
+  /* 4 stick      */ ['stick', 'sticks'],
+  /* 5 watch      */ ['watch', 'watches', 'watched'],
+];
+ALIAS_TABLE.forEach((words, idx) =>
+  words.forEach(w => WORD_MAP.set(w, { type: 'buzz', index: idx }))
+);
+
+// Debounce per-action (allows instant switching between different keywords)
+let lastAction = { key: '', time: 0 };
+
+function handleTranscript(text) {
+  const now  = Date.now();
+  const words = text.toLowerCase().split(/[\s,;.!?''']+/);
+
+  for (const w of words) {
+    const hit = WORD_MAP.get(w);
+    if (!hit) continue;
+
+    // Debounce: block the SAME action within 700 ms
+    const actionKey = hit.type === 'stop' ? '__stop' : `buzz_${hit.index}`;
+    if (actionKey === lastAction.key && now - lastAction.time < 700) continue;
+
+    lastAction = { key: actionKey, time: now };
+
+    if (hit.type === 'stop') {
+      stopBuzzers();
+    } else {
+      triggerBuzzer(hit.index);
+    }
+    return;  // one action per transcript chunk
+  }
+}
+
+function createRecognition() {
+  const rec = new SpeechRecognition();
+  rec.continuous     = true;
+  rec.interimResults = true;
+  rec.lang           = 'en-US';
+  rec.maxAlternatives = 1;
+
+  rec.onresult = (e) => {
+    let text = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) final += e.results[i][0].transcript;
-      else interim += e.results[i][0].transcript;
+      text += e.results[i][0].transcript + ' ';
     }
-    transcriptEl.textContent = final || interim || '—';
-    if (final && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(final.trim());
-    }
+    transcriptEl.textContent = text.trim() || '—';
+    handleTranscript(text);
   };
 
-  recognition.onend = () => {
-    isListening = false;
-    micBtn.classList.remove('listening');
-  };
-
-  recognition.onerror = (e) => {
+  rec.onerror = (e) => {
     console.warn('Speech error:', e.error);
-    isListening = false;
-    micBtn.classList.remove('listening');
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      setStatus('', 'Mic access denied');
+      isListening = false;
+      micBtn.classList.remove('listening');
+    }
+    // no-speech, network, aborted → onend will restart
   };
+
+  rec.onend = () => {
+    if (isListening) {
+      // Instant restart — no setTimeout delay
+      try { rec.start(); } catch(_) {
+        // If instant restart fails (Chrome throttle), retry after 50 ms
+        setTimeout(() => { if (isListening) try { rec.start(); } catch(_) {} }, 50);
+      }
+    } else {
+      micBtn.classList.remove('listening');
+    }
+  };
+
+  return rec;
 }
 
 micBtn.addEventListener('click', async () => {
-  // init audio for visualizer on first click
+  // Init audio visualizer on first click
   if (!audioCtx) {
     try { await initAudio(); } catch(e) { console.warn('Audio init:', e); }
   }
 
-  if (!recognition) {
-    alert('Speech Recognition not supported in this browser. Use Chrome.');
+  if (!SpeechRecognition) {
+    alert('Speech Recognition not supported. Use Chrome.');
     return;
   }
 
   if (!isListening) {
     isListening = true;
+    recognition = createRecognition();   // fresh instance every time
     micBtn.classList.add('listening');
     transcriptEl.textContent = 'Listening…';
-    recognition.start();
+    setStatus('connected', `Ready · ${getESPIP()}`);
+    try { recognition.start(); } catch(_) {}
   } else {
-    recognition.stop();
+    isListening = false;
+    if (recognition) { try { recognition.abort(); } catch(_) {} }  // abort = instant kill
+    micBtn.classList.remove('listening');
+    transcriptEl.textContent = '—';
+    setStatus('', 'Not Connected');
   }
 });
 </script>
