@@ -1,171 +1,200 @@
-# ESP32 Buzzer Project — Arch Linux Setup Guide
+# 📡 COMPANION — Voice-Controlled Buzzer Finder
+
+A voice-activated item finder system built on an **ESP8266** + **web app**. Say the name of an item out loud, and the buzzer attached to it beeps — helping you locate your wallet, keys, glasses, and more without touching a thing.
 
 ---
 
-## PART 1 — Wiring Check
+## 🧠 How It Works
 
-Your wiring based on your description:
-- Buzzer **positive (+)** → **D7** on ESP32 (GPIO 13)
-- Buzzer **negative (-)** → **GND** on ESP32
-
-> ✅ This is correct for a passive buzzer.  
-> If the buzzer is **active** (has a circuit board on it), it will just beep at one tone — that's fine too.
-
----
-
-## PART 2 — Arch Linux USB Setup
-
-### Step 1 — Install required packages
-
-```bash
-sudo pacman -S arduino arduino-avr-core python-pyserial
+```
+Your Voice → Browser (Speech Recognition) → HTTP Request → ESP8266 → GPIO Pin → Buzzer 🔔
 ```
 
-Also install the `udev` rules and add yourself to the `uucp` group (this is the group that owns serial ports on Arch):
+1. Open the web app on your phone or PC (connected to the same WiFi)
+2. Tap the mic button and speak a keyword (e.g. *"wallet"*, *"keys"*)
+3. The browser recognises the word and sends an HTTP GET request to the ESP8266
+4. The ESP8266 fires the corresponding GPIO pin → the buzzer beeps
+5. Say *"stop"* to silence it
 
-```bash
-sudo usermod -aG uucp $USER
-sudo usermod -aG lock $USER
+---
+
+## 🛠️ Hardware
+
+| Component | Quantity |
+|-----------|----------|
+| ESP8266 NodeMCU | 1 |
+| 5V Active Buzzers | 6 |
+| Jumper wires | as needed |
+
+### Pin Mapping
+
+| D-Pin | GPIO | Item |
+|-------|------|------|
+| D1 | 5 | Wallet |
+| D2 | 4 | Keys |
+| D5 | 14 | Medicine |
+| D6 | 12 | Spectacles |
+| D7 | 13 | Stick |
+| D8 | 15 | Watch |
+
+> ⚠️ **Do NOT use D0 (GPIO16), D3 (GPIO0), or D4 (GPIO2)** — these are boot-strapping pins. The ESP8266 hardware drives them HIGH before your code runs, causing buzzers to fire on every power-up.
+
+### Wiring Each Buzzer
+
+```
+Buzzer (+) ──→ GPIO Pin (D1–D8)
+Buzzer (–) ──→ GND
 ```
 
-**Log out and log back in** (or reboot) for group changes to take effect.
+All 6 buzzers share the ESP8266's GND rail.
 
 ---
 
-### Step 2 — Install Arduino IDE 2 (recommended)
+## 💻 Software
 
-Arduino IDE 2 handles ESP32 much better than IDE 1.
+### ESP8266 Firmware (`esp32_buzzer_fixed.ino`)
 
-```bash
-# Via AUR (use yay or paru)
-yay -S arduino-ide-bin
-```
+- Built with **Arduino IDE** + ESP8266 core
+- Runs a lightweight HTTP server on **port 81**
+- Non-blocking buzzer toggling via `millis()` (no `delay()` calls)
+- WiFi modem sleep **disabled** for minimum latency (~30ms response)
 
-Or download the AppImage from https://www.arduino.cc/en/software and run:
-```bash
-chmod +x arduino-ide_*.AppImage
-./arduino-ide_*.AppImage
-```
+**Required Libraries** (install via Arduino Library Manager):
+- `ESP8266WiFi`
+- `ESP8266WebServer`
 
----
+### Web App (`index.html`)
 
-### Step 3 — Check your ESP32 serial port
-
-Plug in your ESP32 via USB. Then run:
-
-```bash
-ls /dev/ttyUSB* /dev/ttyACM*
-```
-
-You should see something like `/dev/ttyUSB0` or `/dev/ttyACM0`.
-
-If you see **nothing**, install the CH340 driver (many ESP32 boards use this chip):
-
-```bash
-sudo modprobe ch341
-```
-
-Check again with `ls /dev/ttyUSB*`. Most ESP32 dev boards with a USB-to-serial chip will show up as `/dev/ttyUSB0`.
+- Pure HTML/CSS/JS — no framework, no server needed
+- **Three.js** animated 3D orb visualiser reacts to your voice
+- **Web Speech API** (Chrome) for continuous voice recognition
+- O(1) keyword matching via a pre-built `Map` — zero loop overhead
+- Saves ESP IP address to `localStorage`
 
 ---
 
-### Step 4 — Add ESP32 board support to Arduino IDE
+## 🚀 Setup
 
-1. Open Arduino IDE 2
-2. Go to **File → Preferences**
-3. In the **"Additional boards manager URLs"** field, paste:
-   ```
-   https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-   ```
-4. Click OK
-5. Go to **Tools → Board → Boards Manager**
-6. Search for `esp32` and install **"esp32 by Espressif Systems"**
+### 1. Flash the ESP8266
 
----
-
-### Step 5 — Install the WebSocketsServer library
-
-1. In Arduino IDE go to **Tools → Manage Libraries**
-2. Search for `WebSockets`
-3. Install **"WebSockets by Markus Sattler"**
-
----
-
-### Step 6 — Configure the board
-
-1. Go to **Tools → Board → esp32 → ESP32 Dev Module**
-   (or pick the specific variant if you know your board — "ESP32-WROOM-32" is the most common)
-2. **Tools → Port** → select `/dev/ttyUSB0` (or whichever appeared earlier)
-3. **Tools → Upload Speed** → `115200`
-
----
-
-### Step 7 — Edit and upload the firmware
-
-1. Open `esp32_buzzer.ino` in Arduino IDE
-2. Change these two lines at the top:
+1. Open `esp32_buzzer_fixed.ino` in Arduino IDE
+2. Set your WiFi credentials at the top of the file:
    ```cpp
-   const char* SSID     = "YOUR_WIFI_SSID";
-   const char* PASSWORD = "YOUR_WIFI_PASSWORD";
+   const char* ssid     = "YOUR_WIFI_NAME";
+   const char* password = "YOUR_WIFI_PASSWORD";
    ```
-3. Make sure your laptop and ESP32 will be on the **same WiFi network**
-4. Click **Upload** (→ arrow button)
-5. While uploading, if you see `Connecting......____` stuck, **hold the BOOT button** on your ESP32 until upload starts
+3. Select board: **NodeMCU 1.0 (ESP-12E Module)**
+4. Flash the firmware
+5. Open Serial Monitor (115200 baud) and note the IP address printed after connecting
+
+### 2. Open the Web App
+
+- Open `index.html` directly in **Google Chrome** (Speech API requires Chrome)
+- Must be on the **same WiFi network** as the ESP8266
+- Enter the ESP's IP address in the box at the bottom and click **Connect**
+
+### 3. Test It
+
+- Click the mic button — it should glow gold and show "Listening…"
+- Say one of the keywords out loud
+- The corresponding buzzer should beep within ~30ms
 
 ---
 
-### Step 8 — Get the ESP32's IP address
+## 🎙️ Voice Keywords
 
-After uploading, open **Tools → Serial Monitor**, set baud rate to `115200`.
+| Say this... | Fires buzzer for... |
+|-------------|---------------------|
+| wallet, valet, ballet | Wallet |
+| keys, key, cheese | Keys |
+| medicine, medic, medical | Medicine |
+| spectacles, specs, glasses | Spectacles |
+| stick, sticks | Stick |
+| watch, watches | Watch |
+| **stop, silence, quiet, off** | **Stops all buzzers** |
 
-You'll see output like:
-```
-[WIFI] Connecting to MyWiFi...
-[WIFI] Connected!
-[WIFI] IP Address: 192.168.1.42       ← COPY THIS
-[WS] WebSocket server started on port 81
-```
-
----
-
-## PART 3 — Using the Web App
-
-1. Open `index.html` in **Google Chrome** (Chrome has the best Speech Recognition API support)
-2. In the **ESP32 IP** box at the bottom, type the IP you got from Serial Monitor (e.g. `192.168.1.42`)
-3. Click **CONNECT** — the status should turn green
-4. Click the **microphone button** and allow microphone access when Chrome asks
-5. Say one of the trigger words: **alarm, buzzer, alert, ring, beep**
-6. The transcript appears, it's sent to the ESP32, and the buzzer beeps!
-7. Say **"stop"** to silence the buzzer
+Aliases handle common speech-recognition mishears (e.g. Chrome often hears *"cheese"* for *"keys"*).
 
 ---
 
-## PART 4 — Troubleshooting
+## 🌐 API Endpoints
 
-| Problem | Fix |
-|---------|-----|
-| Port not visible | `sudo modprobe ch341` then replug USB |
-| Permission denied on `/dev/ttyUSB0` | `sudo usermod -aG uucp $USER` then relogin |
-| Stuck on `Connecting......` | Hold BOOT button on ESP32 during upload |
-| WebSocket won't connect | Make sure laptop & ESP32 are on same WiFi network; check IP in Serial Monitor |
-| Speech not working | Must use Chrome; must be on HTTPS or `localhost` (or just open the HTML file directly) |
-| Buzzer makes no sound | Check wiring — positive to GPIO13, negative to GND; some boards label D7 differently, verify your board's pinout |
+The ESP8266 exposes a simple REST API on `http://<ESP_IP>:81`:
 
----
+| Endpoint | Action |
+|----------|--------|
+| `GET /buzz/0` | Beep wallet buzzer (D1) |
+| `GET /buzz/1` | Beep keys buzzer (D2) |
+| `GET /buzz/2` | Beep medicine buzzer (D5) |
+| `GET /buzz/3` | Beep spectacles buzzer (D6) |
+| `GET /buzz/4` | Beep stick buzzer (D7) |
+| `GET /buzz/5` | Beep watch buzzer (D8) |
+| `GET /stop` | Stop all buzzers |
 
-## PART 5 — Customizing Keywords
-
-In `esp32_buzzer.ino`, edit these arrays to change your trigger/stop words:
-
-```cpp
-const String TRIGGER_KEYWORDS[] = {
-  "alarm", "buzzer", "alert", "ring", "beep"
-  // add whatever you want here
-};
-
-const String STOP_KEYWORDS[] = {
-  "stop", "silence", "quiet", "off", "mute"
-};
+You can trigger any buzzer manually in a browser or with `curl`:
+```bash
+curl http://192.168.1.XXX:81/buzz/0
+curl http://192.168.1.XXX:81/stop
 ```
 
-After editing, re-upload to the ESP32.
+---
+
+## ⚡ Latency Optimisations
+
+The firmware includes several tweaks to minimise the delay between saying a word and hearing the beep:
+
+| Optimisation | Effect |
+|---|---|
+| `WiFi.setSleepMode(WIFI_NONE_SLEEP)` | Eliminates 100–300ms modem wake-up delay |
+| `WiFi.setOutputPower(20.5)` | Max TX power → fewer retransmits → lower jitter |
+| `WiFi.persistent(false)` | Skips flash writes on boot, faster startup |
+| GPIO fires **before** HTTP response | Buzzer triggers at earliest possible moment |
+| `Connection: close` header | Browser doesn't wait for keep-alive timeout |
+
+**Typical end-to-end latency:** ~30ms from HTTP request to buzzer beep.
+
+> Note: The largest remaining delay is the Speech Recognition engine itself — Chrome takes 200–500ms to finalise a spoken word. This is a browser/Google limitation and cannot be reduced on the ESP side.
+
+---
+
+## 🐛 Known Issues & FAQ
+
+**Q: All buzzers beep the moment I plug in the ESP.**
+A: You're using D0, D3, or D4 — boot-strapping pins that go HIGH before `setup()` runs. Move to D1, D2, D5, D6, D7, or D8.
+
+**Q: The blue LED on the ESP is always on.**
+A: Normal behaviour. The blue LED is tied to GPIO2 (D4) / the TX line and reflects WiFi/serial activity. It is not a fault.
+
+**Q: Voice commands work but there's a big delay.**
+A: Make sure the ESP and your device are on the same WiFi band (2.4GHz). Also confirm the firmware has `WiFi.setSleepMode(WIFI_NONE_SLEEP)` — older versions of the code did not include this.
+
+**Q: Speech recognition doesn't work.**
+A: The Web Speech API only works in **Google Chrome** and requires microphone permission. It also needs an internet connection (Google's servers process the audio).
+
+**Q: Can I add more items?**
+A: The ESP8266 has more usable GPIOs (A0 in digital mode, etc.), but 6 is the practical limit with D-pins. To add more, you could use a GPIO expander (e.g. MCP23017 over I2C).
+
+---
+
+## 📁 File Structure
+
+```
+companion/
+├── index.html              # Web app (open in Chrome)
+└── esp32_buzzer_fixed.ino  # ESP8266 Arduino firmware
+```
+
+---
+
+## 🔧 Built With
+
+- [ESP8266 Arduino Core](https://github.com/esp8266/Arduino)
+- [Three.js](https://threejs.org/) — 3D visualiser
+- [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API) — voice recognition
+- Orbitron & Rajdhani fonts via Google Fonts
+
+---
+
+## 📜 License
+
+Personal / hobby project. Free to use and modify.
